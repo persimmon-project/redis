@@ -91,6 +91,14 @@ configEnum aof_fsync_enum[] = {
     {NULL, 0}
 };
 
+configEnum psm_mode_enum[] = {
+    {"no-persist", PSM_NO_PERSIST},
+    {"undo", PSM_UNDO},
+    {"chkpt", PSM_CHKPT},
+    {"disabled", PSM_DISABLED},
+    {NULL,0}
+};
+
 /* Output buffer limits presets. */
 clientBufferLimitsConfig clientBufferLimitsDefaults[CLIENT_TYPE_OBUF_COUNT] = {
     {0, 0, 0}, /* normal */
@@ -426,6 +434,12 @@ void loadServerConfigFromString(char *config) {
         } else if (!strcasecmp(argv[0],"slave-lazy-flush") && argc == 2) {
             if ((server.repl_slave_lazy_flush = yesnotoi(argv[1])) == -1) {
                 err = "argument must be 'yes' or 'no'"; goto loaderr;
+            }
+        } else if (!strcasecmp(argv[0],"psm-mode") && argc == 2) {
+            server.psm_mode = configEnumGetValue(psm_mode_enum,argv[1]);
+            if (server.psm_mode == INT_MIN) {
+                err = "argument must be 'disabled', 'no-persist', 'undo' or 'chkpt'";
+                goto loaderr;
             }
         } else if (!strcasecmp(argv[0],"activedefrag") && argc == 2) {
             if ((server.active_defrag_enabled = yesnotoi(argv[1])) == -1) {
@@ -1162,6 +1176,8 @@ void configSetCommand(client *c) {
     } config_set_enum_field(
       "maxmemory-policy",server.maxmemory_policy,maxmemory_policy_enum) {
     } config_set_enum_field(
+      "psm-mode",server.psm_mode,psm_mode_enum) {
+    } config_set_enum_field(
       "appendfsync",server.aof_fsync,aof_fsync_enum) {
 
     /* Everyhing else is an error... */
@@ -1347,6 +1363,8 @@ void configGetCommand(client *c) {
             server.aof_fsync,aof_fsync_enum);
     config_get_enum_field("syslog-facility",
             server.syslog_facility,syslog_facility_enum);
+    config_get_enum_field("psm-mode",
+            server.psm_mode,psm_mode_enum);
 
     /* Everything we can't handle with macros follows. */
 
@@ -2064,6 +2082,7 @@ int rewriteConfig(char *path) {
     rewriteConfigYesNoOption(state,"lazyfree-lazy-expire",server.lazyfree_lazy_expire,CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE);
     rewriteConfigYesNoOption(state,"lazyfree-lazy-server-del",server.lazyfree_lazy_server_del,CONFIG_DEFAULT_LAZYFREE_LAZY_SERVER_DEL);
     rewriteConfigYesNoOption(state,"slave-lazy-flush",server.repl_slave_lazy_flush,CONFIG_DEFAULT_SLAVE_LAZY_FLUSH);
+    rewriteConfigEnumOption(state,"psm-mode",server.psm_mode,psm_mode_enum,CONFIG_DEFAULT_PSM_MODE);
 
     /* Rewrite Sentinel config if in Sentinel mode. */
     if (server.sentinel_mode) rewriteConfigSentinelOption(state);

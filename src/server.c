@@ -1228,6 +1228,10 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     /* Write the AOF buffer on disk */
     flushAppendOnlyFile(0);
 
+    /* Commit new PSM log entries. */
+    if (server.psm_mode != PSM_DISABLED)
+        commitPSM();
+
     /* Handle writes with pending output buffers. */
     handleClientsWithPendingWrites();
 
@@ -1528,6 +1532,8 @@ void initServerConfig(void) {
     server.assert_line = 0;
     server.bug_report_start = 0;
     server.watchdog_period = 0;
+
+    server.psm_mode = CONFIG_DEFAULT_PSM_MODE;
 }
 
 extern char **environ;
@@ -1812,15 +1818,6 @@ void resetServerStats(void) {
 void initServer(void) {
     int j;
 
-    signal(SIGHUP, SIG_IGN);
-    signal(SIGPIPE, SIG_IGN);
-    setupSignalHandlers();
-
-    if (server.syslog_enabled) {
-        openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
-            server.syslog_facility);
-    }
-
     server.pid = getpid();
     server.current_client = NULL;
     server.clients = listCreate();
@@ -1838,37 +1835,7 @@ void initServer(void) {
 
     createSharedObjects();
     adjustOpenFilesLimit();
-    server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
-    if (server.el == NULL) {
-        serverLog(LL_WARNING,
-            "Failed creating the event loop. Error message: '%s'",
-            strerror(errno));
-        exit(1);
-    }
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
-
-    /* Open the TCP listening socket for the user commands. */
-    if (server.port != 0 &&
-        listenToPort(server.port,server.ipfd,&server.ipfd_count) == C_ERR)
-        exit(1);
-
-    /* Open the listening Unix domain socket. */
-    if (server.unixsocket != NULL) {
-        unlink(server.unixsocket); /* don't care if this fails */
-        server.sofd = anetUnixServer(server.neterr,server.unixsocket,
-            server.unixsocketperm, server.tcp_backlog);
-        if (server.sofd == ANET_ERR) {
-            serverLog(LL_WARNING, "Opening Unix socket: %s", server.neterr);
-            exit(1);
-        }
-        anetNonBlock(NULL,server.sofd);
-    }
-
-    /* Abort if there are no listening sockets at all. */
-    if (server.ipfd_count == 0 && server.sofd < 0) {
-        serverLog(LL_WARNING, "Configured to not listen anywhere, exiting.");
-        exit(1);
-    }
 
     /* Create the Redis databases, and initialize other internal state. */
     for (j = 0; j < server.dbnum; j++) {
@@ -1912,6 +1879,65 @@ void initServer(void) {
     server.aof_last_write_errno = 0;
     server.repl_good_slaves_count = 0;
     updateCachedTime();
+
+    /* --- BEGIN: Moved block of 7 lines. --- */
+    if (server.cluster_enabled) clusterInit();
+    replicationScriptCacheInit();
+    scriptingInit(1);
+    slowlogInit();
+    latencyMonitorInit();
+    // bioInit();
+    server.initial_memory_usage = zmalloc_used_memory();
+    /* --- END: Moved block of 7 lines. --- */
+
+    if (server.psm_mode != PSM_DISABLED)
+        initializePSM();
+
+    /* --- BEGIN: Moved block of 7 lines. --- */
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+    setupSignalHandlers();
+
+    if (server.syslog_enabled) {
+        openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
+            server.syslog_facility);
+    }
+    /* --- END: Moved block of 7 lines. --- */
+
+    /* --- BEGIN: Moved block of 7 lines. --- */
+    server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
+    if (server.el == NULL) {
+        serverLog(LL_WARNING,
+            "Failed creating the event loop. Error message: '%s'",
+            strerror(errno));
+        exit(1);
+    }
+    /* --- END: Moved block of 7 lines. --- */
+
+    /* --- BEGIN: Moved block of 22 lines. --- */
+    /* Open the TCP listening socket for the user commands. */
+    if (server.port != 0 &&
+        listenToPort(server.port,server.ipfd,&server.ipfd_count) == C_ERR)
+        exit(1);
+
+    /* Open the listening Unix domain socket. */
+    if (server.unixsocket != NULL) {
+        unlink(server.unixsocket); /* don't care if this fails */
+        server.sofd = anetUnixServer(server.neterr,server.unixsocket,
+            server.unixsocketperm, server.tcp_backlog);
+        if (server.sofd == ANET_ERR) {
+            serverLog(LL_WARNING, "Opening Unix socket: %s", server.neterr);
+            exit(1);
+        }
+        anetNonBlock(NULL,server.sofd);
+    }
+
+    /* Abort if there are no listening sockets at all. */
+    if (server.ipfd_count == 0 && server.sofd < 0) {
+        serverLog(LL_WARNING, "Configured to not listen anywhere, exiting.");
+        exit(1);
+    }
+    /* --- END: Moved block of 22 lines. --- */
 
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
@@ -1964,14 +1990,6 @@ void initServer(void) {
         server.maxmemory = 3072LL*(1024*1024); /* 3 GB */
         server.maxmemory_policy = MAXMEMORY_NO_EVICTION;
     }
-
-    if (server.cluster_enabled) clusterInit();
-    replicationScriptCacheInit();
-    scriptingInit(1);
-    slowlogInit();
-    latencyMonitorInit();
-    bioInit();
-    server.initial_memory_usage = zmalloc_used_memory();
 }
 
 /* Populates the Redis Command Table starting from the hard coded list
@@ -2112,6 +2130,8 @@ void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
         feedAppendOnlyFile(cmd,dbid,argv,argc);
     if (flags & PROPAGATE_REPL)
         replicationFeedSlaves(server.slaves,dbid,argv,argc);
+    if (server.psm_mode != PSM_DISABLED)
+        logToPSM(cmd,argv,argc);
 }
 
 /* Used inside commands to schedule the propagation of additional commands
@@ -3867,7 +3887,7 @@ int main(int argc, char **argv) {
         linuxMemoryWarnings();
     #endif
         moduleLoadFromQueue();
-        loadDataFromDisk();
+        // loadDataFromDisk();
         if (server.cluster_enabled) {
             if (verifyClusterConfigWithData() == C_ERR) {
                 serverLog(LL_WARNING,

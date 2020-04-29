@@ -342,6 +342,13 @@ typedef long long mstime_t; /* millisecond time type. */
 #define AOF_FSYNC_EVERYSEC 2
 #define CONFIG_DEFAULT_AOF_FSYNC AOF_FSYNC_EVERYSEC
 
+/* PSM defines */
+#define PSM_DISABLED 0
+#define PSM_NO_PERSIST 1
+#define PSM_UNDO 2
+#define PSM_CHKPT 3
+#define CONFIG_DEFAULT_PSM_MODE PSM_DISABLED
+
 /* Zip structure related defaults */
 #define OBJ_HASH_MAX_ZIPLIST_ENTRIES 512
 #define OBJ_HASH_MAX_ZIPLIST_VALUE 64
@@ -1200,6 +1207,8 @@ struct redisServer {
     /* System hardware info */
     size_t system_memory_size;  /* Total memory in system as reported by OS */
 
+    int psm_mode;
+
     /* Mutexes used to protect atomic variables when atomic builtins are
      * not available. */
     pthread_mutex_t lruclock_mutex;
@@ -1535,6 +1544,11 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void aofRewriteBufferReset(void);
 unsigned long aofRewriteBufferSize(void);
 ssize_t aofReadDiffFromParent(void);
+
+/* psm.c -- persistent state machine. */
+void initializePSM(void);
+void logToPSM(struct redisCommand *cmd, robj **argv, int _argc);
+void commitPSM(void);
 
 /* Child info */
 void openChildInfoPipe(void);
